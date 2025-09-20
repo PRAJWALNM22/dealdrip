@@ -1165,27 +1165,47 @@ class NotificationManager:
         return success
     
     def _send_telegram_email_notification(self, product_url, current_price, target_price, user_email=None):
-        """Send notification via our JavaScript Telegram+Email system"""
+        """Send notification via JavaScript system with Python email fallback"""
         try:
             savings = target_price - current_price
             title = f"🎉 Deal Alert - ₹{current_price:.2f}"
             message = f"Price Alert! Your target has been reached!\n\n💰 Current Price: ₹{current_price:.2f}\n🎯 Target Price: ₹{target_price:.2f}\n💸 You Save: ₹{savings:.2f}\n\n🔗 Product: {product_url}\n\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n- DealDrip Bot"
             
-            # Call our Node.js notification system with proper encoding
-            result = subprocess.run([
-                'node', 'send_notification.js', 
-                title, message, product_url
-            ], capture_output=True, text=True, timeout=15, encoding='utf-8', errors='ignore')
+            # Try Node.js notification system first
+            try:
+                result = subprocess.run([
+                    'node', 'send_notification.js', 
+                    title, message, product_url
+                ], capture_output=True, text=True, timeout=15, encoding='utf-8', errors='ignore')
+                
+                if result.stdout and 'NOTIFICATION_SUCCESS' in result.stdout:
+                    logger.info("✅ Node.js Telegram+Email notification sent successfully!")
+                    return True
+                else:
+                    logger.warning(f"⚠️ Node.js notification failed: {result.stdout if result.stdout else 'No output'}")
+                    logger.info("🔄 Falling back to Python email notification...")
             
-            if result.stdout and 'NOTIFICATION_SUCCESS' in result.stdout:
-                logger.info("✅ Telegram+Email notification sent successfully!")
-                return True
+            except Exception as node_error:
+                logger.warning(f"⚠️ Node.js notification error: {node_error}")
+                logger.info("🔄 Falling back to Python email notification...")
+            
+            # Fallback: Use Python email system
+            if user_email:
+                email_success = self.email_notifier.send_price_alert(
+                    user_email, product_url, current_price, target_price
+                )
+                if email_success:
+                    logger.info("✅ Python email notification sent successfully!")
+                    return True
+                else:
+                    logger.error("❌ Python email notification also failed")
             else:
-                logger.error(f"❌ Telegram+Email notification failed: {result.stdout if result.stdout else 'No output'}")
-                return False
+                logger.warning("⚠️ No email address provided for fallback notification")
+            
+            return False
                 
         except Exception as e:
-            logger.error(f"❌ Error sending Telegram+Email notification: {e}")
+            logger.error(f"❌ Error in notification system: {e}")
             return False
     
     def health_check(self):
