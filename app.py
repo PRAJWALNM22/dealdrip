@@ -20,7 +20,6 @@ from apscheduler.triggers.cron import CronTrigger
 import requests
 from bs4 import BeautifulSoup
 import atexit
-import pywhatkit as pwk
 import time
 from threading import Thread
 
