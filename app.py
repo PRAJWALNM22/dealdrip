@@ -307,13 +307,20 @@ class PriceScraper:
             domain = self._get_domain(url)
             
             logger.info(f"Extracting price from domain: {domain}")
+            logger.debug(f"Page title: {soup.title.string if soup.title else 'No title'}")
+            logger.debug(f"Content length: {len(response.text)} characters")
+            
+            # Debug: Log first 500 chars to see what we're getting
+            content_sample = response.text[:500].replace('\n', ' ').replace('\r', '')
+            logger.debug(f"Content sample: {content_sample}")
             
             # Try different strategies in order of reliability
             strategies = [
                 ('Structured Data', lambda: self._extract_from_structured_data(soup, response.text)),
-                ('Main Content', lambda: self._extract_from_main_content(soup)),
                 ('Site Specific', lambda: self._extract_site_specific_price(soup, domain, url)),
-                ('Context Aware', lambda: self._extract_context_aware_generic(soup))
+                ('Main Content', lambda: self._extract_from_main_content(soup)),
+                ('Context Aware', lambda: self._extract_context_aware_generic(soup)),
+                ('Aggressive Regex', lambda: self._extract_aggressive_regex(response.text))
             ]
             
             for strategy_name, strategy_func in strategies:
@@ -375,15 +382,25 @@ class PriceScraper:
                 '.CEmiEU ._16Jk6d'
             ],
             'myntra.com': [
-                '.pdp-price strong',
-                '.pdp-price .pdp-mrp', 
-                'span[class*="pdp-price"]',
-                '.product-discountedPrice',
-                '.price-container .price-current',
-                '[class*="price-current"]',
-                '[class*="price-discounted"]',
-                '.product-price .price',
-                'span[data-testid*="price"]'
+                # 2024 Myntra selectors - comprehensive list
+                'span.pdp-price strong',
+                '.pdp-price strong', 
+                '.price-container .current-price',
+                '.product-price .current-price',
+                'span[class*="price-discounted"]',
+                'span[class*="price-current"]',
+                'div[class*="price-current"]',
+                '[data-testid="price"]',
+                '[class*="ProductPrice"]',
+                '.price-info .current-price',
+                '.selling-price',
+                '.final-price',
+                # Generic price patterns that might work
+                'span:contains("₹")',
+                'div:contains("₹")',
+                '.price',
+                '[class*="price"]',
+                '[id*="price"]'
             ],
             'ajio.com': [
                 '.prod-sp',
@@ -432,18 +449,22 @@ class PriceScraper:
             if domain_key in domain:
                 selectors = site_selectors[domain_key]
                 logger.info(f"Using {len(selectors)} specific selectors for {domain_key}")
+                logger.debug(f"Selectors: {selectors[:5]}")  # Log first 5 selectors
                 break
         
         # Try site-specific selectors
         for selector in selectors:
             try:
                 elements = soup.select(selector)
+                logger.debug(f"Selector '{selector}' found {len(elements)} elements")
+                
                 for element in elements:
                     if element:
                         price_text = element.get_text(strip=True)
+                        logger.debug(f"Element text for '{selector}': '{price_text[:50]}...'")
                         price = self._parse_price(price_text)
                         if price and price > 0:
-                            logger.info(f"Found price with site-specific selector '{selector}': ${price}")
+                            logger.info(f"Found price with site-specific selector '{selector}': ₹{price}")
                             return price
             except Exception as e:
                 logger.debug(f"Selector '{selector}' failed: {e}")
@@ -763,6 +784,76 @@ class PriceScraper:
                     return price
         
         return None
+    
+    def _extract_aggressive_regex(self, html_content):
+        """Aggressive regex-based price extraction that searches entire page content"""
+        logger.info("Trying aggressive regex extraction on full page content")
+        
+        # More comprehensive regex patterns for Indian sites
+        patterns = [
+            # Standard rupee patterns with various spacings
+            r'₹\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
+            r'Rs\.?\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
+            r'INR\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
+            
+            # JSON-style patterns (very common in modern sites)
+            r'"price"\s*:\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
+            r'"sellingPrice"\s*:\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
+            r'"currentPrice"\s*:\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
+            r'"salePrice"\s*:\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
+            r'"finalPrice"\s*:\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
+            r'"discountedPrice"\s*:\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
+            
+            # JavaScript variable patterns
+            r'price[^\d]*=\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
+            r'currentPrice[^\d]*=\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
+            r'sellingPrice[^\d]*=\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
+            
+            # Data attribute patterns
+            r'data-price[^>]*["\']([1-9][0-9,]*(?:\.[0-9]{2})?)["\']',
+            r'data-selling-price[^>]*["\']([1-9][0-9,]*(?:\.[0-9]{2})?)["\']',
+            
+            # Price followed by common text indicators
+            r'([1-9][0-9,]*(?:\.[0-9]{2})?)\s*(?:only|OFF|offer|discount)',
+            r'(?:was|originally|MRP|marked)\s*₹?\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
+            
+            # Generic number patterns in price-like contexts (be careful with these)
+            r'₹([1-9][0-9]{2,6})',  # Simple rupee with 3-7 digits
+        ]
+        
+        all_prices = []
+        
+        # Extract all potential prices
+        for i, pattern in enumerate(patterns):
+            matches = re.findall(pattern, html_content, re.IGNORECASE | re.MULTILINE)
+            logger.debug(f"Pattern {i+1} found {len(matches)} matches: {pattern}")
+            
+            for match in matches:
+                price = self._parse_price(match)
+                if price and 50 <= price <= 50000:  # Reasonable range for most products
+                    all_prices.append({
+                        'price': price, 
+                        'pattern_index': i,
+                        'pattern': pattern,
+                        'raw_match': match
+                    })
+        
+        if not all_prices:
+            logger.info("No prices found with aggressive regex")
+            return None
+        
+        # Sort by pattern priority (lower index = higher priority)
+        all_prices.sort(key=lambda x: (x['pattern_index'], x['price']))
+        
+        # Log what we found
+        price_values = [p['price'] for p in all_prices[:10]]  # First 10
+        logger.info(f"Aggressive regex found {len(all_prices)} price candidates: {price_values}")
+        
+        # Return the most likely price (first in sorted list)
+        selected_price = all_prices[0]['price']
+        logger.info(f"Selected price ₹{selected_price:.2f} from pattern: {all_prices[0]['pattern'][:50]}...")
+        
+        return selected_price
     
     def _parse_price(self, price_text):
         """Enhanced price parsing with better format handling"""
