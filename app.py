@@ -23,8 +23,8 @@ import atexit
 import time
 from threading import Thread
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging with debug level for production debugging
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # Flask app initialization
@@ -395,12 +395,13 @@ class PriceScraper:
                 '.price-info .current-price',
                 '.selling-price',
                 '.final-price',
-                # Generic price patterns that might work
-                'span:contains("₹")',
-                'div:contains("₹")',
+                # Generic price patterns that might work (removed deprecated :contains)
                 '.price',
                 '[class*="price"]',
-                '[id*="price"]'
+                '[id*="price"]',
+                'span[title*="₹"]',
+                'span[aria-label*="price"]',
+                'div[data-price]'
             ],
             'ajio.com': [
                 '.prod-sp',
@@ -789,36 +790,61 @@ class PriceScraper:
         """Aggressive regex-based price extraction that searches entire page content"""
         logger.info("Trying aggressive regex extraction on full page content")
         
-        # More comprehensive regex patterns for Indian sites
+        # Log content sample for debugging
+        content_length = len(html_content)
+        logger.debug(f"Total content length: {content_length} characters")
+        
+        # Sample different parts of content to understand structure
+        if content_length > 1000:
+            beginning = html_content[:300].replace('\n', ' ')[:100]
+            middle = html_content[content_length//2:content_length//2+300].replace('\n', ' ')[:100]
+            end = html_content[-300:].replace('\n', ' ')[:100]
+            logger.debug(f"Content beginning: {beginning}...")
+            logger.debug(f"Content middle: {middle}...")
+            logger.debug(f"Content end: {end}...")
+        else:
+            logger.debug(f"Short content: {html_content[:200]}...")
+        
+        # Comprehensive regex patterns for Indian e-commerce sites
         patterns = [
-            # Standard rupee patterns with various spacings
+            # Standard rupee patterns with flexible spacing and formatting
             r'₹\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
             r'Rs\.?\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
             r'INR\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
+            r'₹([1-9][0-9,]{2,8})',
             
-            # JSON-style patterns (very common in modern sites)
-            r'"price"\s*:\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
-            r'"sellingPrice"\s*:\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
-            r'"currentPrice"\s*:\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
-            r'"salePrice"\s*:\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
-            r'"finalPrice"\s*:\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
-            r'"discountedPrice"\s*:\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
+            # JSON/JavaScript patterns (most reliable for modern sites) - fixed to avoid trailing punctuation
+            r'"price"\s*:\s*"?([1-9][0-9,]*(?:\.[0-9]{2})?)"?[,}\s]',
+            r'"sellingPrice"\s*:\s*"?([1-9][0-9,]*(?:\.[0-9]{2})?)"?[,}\s]',
+            r'"currentPrice"\s*:\s*"?([1-9][0-9,]*(?:\.[0-9]{2})?)"?[,}\s]',
+            r'"salePrice"\s*:\s*"?([1-9][0-9,]*(?:\.[0-9]{2})?)"?[,}\s]',
+            r'"finalPrice"\s*:\s*"?([1-9][0-9,]*(?:\.[0-9]{2})?)"?[,}\s]',
+            r'"discountedPrice"\s*:\s*"?([1-9][0-9,]*(?:\.[0-9]{2})?)"?[,}\s]',
+            r'"listPrice"\s*:\s*"?([1-9][0-9,]*(?:\.[0-9]{2})?)"?[,}\s]',
+            r'"mrp"\s*:\s*"?([1-9][0-9,]*(?:\.[0-9]{2})?)"?[,}\s]',
             
-            # JavaScript variable patterns
-            r'price[^\d]*=\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
-            r'currentPrice[^\d]*=\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
-            r'sellingPrice[^\d]*=\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
+            # JavaScript variable assignments
+            r'price\s*[=:]\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
+            r'currentPrice\s*[=:]\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
+            r'sellingPrice\s*[=:]\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
+            r'productPrice\s*[=:]\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
             
-            # Data attribute patterns
-            r'data-price[^>]*["\']([1-9][0-9,]*(?:\.[0-9]{2})?)["\']',
-            r'data-selling-price[^>]*["\']([1-9][0-9,]*(?:\.[0-9]{2})?)["\']',
+            # HTML data attributes
+            r'data-price[=\s]*["\']([1-9][0-9,]*(?:\.[0-9]{2})?)["\']',
+            r'data-selling-price[=\s]*["\']([1-9][0-9,]*(?:\.[0-9]{2})?)["\']',
+            r'data-current-price[=\s]*["\']([1-9][0-9,]*(?:\.[0-9]{2})?)["\']',
             
-            # Price followed by common text indicators
-            r'([1-9][0-9,]*(?:\.[0-9]{2})?)\s*(?:only|OFF|offer|discount)',
-            r'(?:was|originally|MRP|marked)\s*₹?\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
+            # Context-based patterns
+            r'([1-9][0-9,]*(?:\.[0-9]{2})?)\s*(?:only|OFF|offer|discount|/-)',
+            r'(?:was|originally|MRP|marked|price)\s*:?\s*₹?\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
+            r'(?:save|you save)\s*₹?\s*([1-9][0-9,]*(?:\.[0-9]{2})?)',
             
-            # Generic number patterns in price-like contexts (be careful with these)
-            r'₹([1-9][0-9]{2,6})',  # Simple rupee with 3-7 digits
+            # Very flexible patterns (use with caution)
+            r'([1-9][0-9]{2,5})(?=\s*(?:/\-|only|OFF))',  # Numbers followed by price indicators
+            r'([1-9],[0-9]{2,3}(?:,[0-9]{3})*)',  # Indian number format: 1,234 or 12,34,567
+            
+            # Emergency patterns - very broad (lowest priority)
+            r'([5-9][0-9]{2}|[1-9][0-9]{3,5})',  # Any number between 500-999999
         ]
         
         all_prices = []
@@ -826,11 +852,14 @@ class PriceScraper:
         # Extract all potential prices
         for i, pattern in enumerate(patterns):
             matches = re.findall(pattern, html_content, re.IGNORECASE | re.MULTILINE)
-            logger.debug(f"Pattern {i+1} found {len(matches)} matches: {pattern}")
+            if matches:
+                logger.debug(f"Pattern {i+1} found {len(matches)} matches: {matches[:3]}...")  # Show first 3 matches
+            else:
+                logger.debug(f"Pattern {i+1} found no matches")
             
             for match in matches:
                 price = self._parse_price(match)
-                if price and 50 <= price <= 50000:  # Reasonable range for most products
+                if price and 10 <= price <= 100000:  # More lenient range for better extraction
                     all_prices.append({
                         'price': price, 
                         'pattern_index': i,
