@@ -1,3 +1,5 @@
+pywhatkit==5.4
+
 # Render Deployment Requirements for DealDrip
 
 # Core Framework
