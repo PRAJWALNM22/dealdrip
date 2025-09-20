@@ -76,8 +76,14 @@ class DatabaseManager:
     def get_connection(self):
         """Get database connection (SQLite or PostgreSQL)"""
         if self.is_postgres:
-            import psycopg2
-            return psycopg2.connect(self.db_path)
+            try:
+                # Try psycopg3 first (better Python 3.13+ support)
+                import psycopg
+                return psycopg.connect(self.db_path)
+            except ImportError:
+                # Fallback to psycopg2
+                import psycopg2
+                return psycopg2.connect(self.db_path)
         else:
             return sqlite3.connect(self.db_path)
     
