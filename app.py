@@ -205,18 +205,104 @@ class PriceScraper:
     """Context-aware price scraper that focuses on the main product price"""
     
     def __init__(self):
+        # Production-ready headers that mimic real browser behavior
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0'
         }
+        # Create a session for better connection reuse
+        self.session = requests.Session()
+        self.session.headers.update(self.headers)
+        
+        # Alternative user agents for rotation
+        self.user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15'
+        ]
     
     def extract_price(self, url):
         """
-        Context-aware price extraction focusing on the main product price
+        Context-aware price extraction focusing on the main product price with retry mechanism
         """
+        # Retry configuration
+        max_retries = 3
+        timeout_values = [20, 25, 30]  # Increasing timeouts for retries
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Attempt {attempt + 1}/{max_retries} to extract price from {url}")
+                
+                # Add small random delay to avoid being detected as bot
+                import random
+                import time
+                delay = random.uniform(1, 3) if attempt > 0 else 0
+                if delay > 0:
+                    time.sleep(delay)
+                
+                # Rotate user agent for different attempts
+                if attempt > 0:
+                    random_ua = random.choice(self.user_agents)
+                    self.session.headers.update({'User-Agent': random_ua})
+                
+                # Use session with appropriate timeout
+                timeout = timeout_values[attempt] if attempt < len(timeout_values) else 30
+                response = self.session.get(url, timeout=timeout)
+                
+                # Check if we got a successful response
+                if response.status_code == 200:
+                    logger.info(f"Successfully fetched page (status: {response.status_code})")
+                    break
+                elif response.status_code == 403:
+                    logger.warning(f"Access forbidden (403). Trying with different headers...")
+                    # Try with more basic headers for this attempt
+                    basic_headers = {
+                        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    }
+                    response = self.session.get(url, headers=basic_headers, timeout=timeout)
+                    if response.status_code == 200:
+                        break
+                elif response.status_code in [429, 502, 503, 504]:
+                    # Rate limited or server errors - wait and retry
+                    import time
+                    wait_time = (attempt + 1) * 2  # Exponential backoff
+                    logger.warning(f"Server error {response.status_code}. Waiting {wait_time}s before retry...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    response.raise_for_status()
+                    
+            except requests.exceptions.Timeout:
+                logger.warning(f"Timeout on attempt {attempt + 1}. Retrying with longer timeout...")
+                if attempt == max_retries - 1:
+                    raise
+                continue
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"Request failed on attempt {attempt + 1}: {e}")
+                if attempt == max_retries - 1:
+                    raise
+                import time
+                time.sleep(2)  # Wait before retry
+                continue
+        
+        if response.status_code != 200:
+            logger.error(f"Failed to fetch page after {max_retries} attempts. Status: {response.status_code}")
+            return None
+        
         try:
-            response = requests.get(url, headers=self.headers, timeout=15)
-            response.raise_for_status()
-            
+            # Parse the HTML content
             soup = BeautifulSoup(response.content, 'html.parser')
             domain = self._get_domain(url)
             
@@ -290,9 +376,14 @@ class PriceScraper:
             ],
             'myntra.com': [
                 '.pdp-price strong',
-                '.pdp-price .pdp-mrp',
+                '.pdp-price .pdp-mrp', 
                 'span[class*="pdp-price"]',
-                '.product-discountedPrice'
+                '.product-discountedPrice',
+                '.price-container .price-current',
+                '[class*="price-current"]',
+                '[class*="price-discounted"]',
+                '.product-price .price',
+                'span[data-testid*="price"]'
             ],
             'ajio.com': [
                 '.prod-sp',
