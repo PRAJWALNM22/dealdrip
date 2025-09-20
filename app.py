@@ -23,8 +23,8 @@ import atexit
 import time
 from threading import Thread
 
-# Configure logging with debug level for production debugging
-logging.basicConfig(level=logging.DEBUG)
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Flask app initialization
@@ -224,13 +224,33 @@ class PriceScraper:
         self.session = requests.Session()
         self.session.headers.update(self.headers)
         
-        # Alternative user agents for rotation
+        # Alternative user agents for rotation (more diverse and recent)
         self.user_agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15'
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:122.0) Gecko/20100101 Firefox/122.0'
+        ]
+        
+        # Additional headers pool for rotation
+        self.header_sets = [
+            {
+                'Accept-Language': 'en-US,en;q=0.9,hi;q=0.8',
+                'Accept-Encoding': 'gzip, deflate, br, zstd',
+                'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                'sec-ch-ua-mobile': '?0',
+                'sec-ch-ua-platform': '"Windows"'
+            },
+            {
+                'Accept-Language': 'en-IN,en;q=0.9,hi;q=0.8',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="121", "Google Chrome";v="121"',
+                'sec-ch-ua-mobile': '?0',
+                'sec-ch-ua-platform': '"macOS"'
+            }
         ]
     
     def extract_price(self, url):
@@ -252,10 +272,18 @@ class PriceScraper:
                 if delay > 0:
                     time.sleep(delay)
                 
-                # Rotate user agent for different attempts
+                # Rotate user agent and headers for different attempts
                 if attempt > 0:
                     random_ua = random.choice(self.user_agents)
+                    random_headers = random.choice(self.header_sets)
+                    
+                    # Update session with new headers
                     self.session.headers.update({'User-Agent': random_ua})
+                    self.session.headers.update(random_headers)
+                    
+                    # Add referrer to look more legitimate
+                    domain = self._get_domain(url)
+                    self.session.headers.update({'Referer': f'https://{domain}/'})
                 
                 # Use session with appropriate timeout
                 timeout = timeout_values[attempt] if attempt < len(timeout_values) else 30
@@ -307,8 +335,14 @@ class PriceScraper:
             domain = self._get_domain(url)
             
             logger.info(f"Extracting price from domain: {domain}")
-            logger.debug(f"Page title: {soup.title.string if soup.title else 'No title'}")
+            page_title = soup.title.string if soup.title else 'No title'
+            logger.debug(f"Page title: {page_title}")
             logger.debug(f"Content length: {len(response.text)} characters")
+            
+            # Check if we got a maintenance/error page instead of the actual product page
+            if self._is_blocked_or_error_page(response.text, page_title):
+                logger.warning(f"Detected maintenance/error page instead of product page. Title: {page_title}")
+                return None
             
             # Debug: Log first 500 chars to see what we're getting
             content_sample = response.text[:500].replace('\n', ' ').replace('\r', '')
@@ -320,7 +354,8 @@ class PriceScraper:
                 ('Site Specific', lambda: self._extract_site_specific_price(soup, domain, url)),
                 ('Main Content', lambda: self._extract_from_main_content(soup)),
                 ('Context Aware', lambda: self._extract_context_aware_generic(soup)),
-                ('Aggressive Regex', lambda: self._extract_aggressive_regex(response.text))
+                ('Aggressive Regex', lambda: self._extract_aggressive_regex(response.text)),
+                ('API Fallback', lambda: self._try_api_fallback(url, domain))
             ]
             
             for strategy_name, strategy_func in strategies:
@@ -883,6 +918,101 @@ class PriceScraper:
         logger.info(f"Selected price ₹{selected_price:.2f} from pattern: {all_prices[0]['pattern'][:50]}...")
         
         return selected_price
+    
+    def _is_blocked_or_error_page(self, html_content, page_title):
+        """Detect if we received a maintenance, error, or blocking page instead of actual content"""
+        
+        # Convert to lowercase for case-insensitive matching
+        content_lower = html_content.lower()
+        title_lower = page_title.lower() if page_title else ''
+        
+        # Common indicators of maintenance/error/blocking pages
+        error_indicators = [
+            'site maintenance', 'maintenance mode', 'under maintenance',
+            'temporarily unavailable', 'service unavailable',
+            'access denied', 'forbidden', 'blocked',
+            'error 403', 'error 404', 'error 500',
+            'something went wrong', 'oops', 'sorry',
+            'please try again', 'administrator',
+            'captcha', 'verify you are human',
+            'bot detected', 'automated traffic'
+        ]
+        
+        # Check title first (most reliable)
+        for indicator in error_indicators:
+            if indicator in title_lower:
+                logger.debug(f"Error indicator '{indicator}' found in title")
+                return True
+        
+        # Check if content is suspiciously short for a product page
+        if len(html_content) < 1000:
+            logger.debug(f"Content too short ({len(html_content)} chars) for a product page")
+            # Additional check - if it's short AND contains error indicators
+            for indicator in error_indicators:
+                if indicator in content_lower:
+                    logger.debug(f"Error indicator '{indicator}' found in short content")
+                    return True
+        
+        # Check for absence of typical e-commerce elements in short pages
+        if len(html_content) < 2000:  # Only for short pages to avoid false positives
+            ecommerce_indicators = [
+                'add to cart', 'buy now', 'price', 'product',
+                '₹', 'rs.', 'inr', '$', 'discount', 'offer'
+            ]
+            
+            found_indicators = sum(1 for indicator in ecommerce_indicators if indicator in content_lower)
+            if found_indicators < 2:  # If less than 2 e-commerce indicators found
+                logger.debug(f"Only {found_indicators} e-commerce indicators found in short content")
+                return True
+        
+        return False
+    
+    def _try_api_fallback(self, original_url, domain):
+        """Try alternative approaches when main scraping fails"""
+        logger.info("Trying API fallback methods")
+        
+        fallback_strategies = []
+        
+        # Strategy 1: Try mobile version
+        if 'myntra.com' in domain:
+            mobile_url = original_url.replace('www.myntra.com', 'm.myntra.com')
+            fallback_strategies.append(('Mobile Site', mobile_url))
+        elif 'amazon.in' in domain:
+            mobile_url = original_url.replace('www.amazon.in', 'm.amazon.in')
+            fallback_strategies.append(('Mobile Site', mobile_url))
+        
+        # Strategy 2: Try AMP version
+        if '/buy' in original_url or '/p/' in original_url:
+            amp_url = original_url.replace('/buy', '/amp').replace('/p/', '/amp/')
+            fallback_strategies.append(('AMP Version', amp_url))
+        
+        # Try each fallback strategy
+        for strategy_name, fallback_url in fallback_strategies:
+            try:
+                logger.debug(f"Trying {strategy_name}: {fallback_url}")
+                
+                # Use a simple GET request with mobile user agent
+                mobile_headers = {
+                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+                }
+                
+                response = requests.get(fallback_url, headers=mobile_headers, timeout=15)
+                if response.status_code == 200 and len(response.text) > 1000:
+                    # Quick check if this looks like actual content
+                    if not self._is_blocked_or_error_page(response.text, 'Unknown'):
+                        logger.info(f"{strategy_name} returned valid content, trying extraction")
+                        price = self._extract_aggressive_regex(response.text)
+                        if price:
+                            logger.info(f"Found price ₹{price} using {strategy_name}")
+                            return price
+                        
+            except Exception as e:
+                logger.debug(f"{strategy_name} failed: {e}")
+                continue
+        
+        logger.info("All API fallback methods failed")
+        return None
     
     def _parse_price(self, price_text):
         """Enhanced price parsing with better format handling"""
