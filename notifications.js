@@ -1,17 +1,8 @@
-const TelegramBot = require('node-telegram-bot-api');
 const nodemailer = require('nodemailer');
 require('dotenv').config();
 
 class NotificationService {
     constructor() {
-        // Telegram Bot Configuration
-        this.telegramBot = null;
-        this.telegramChatId = process.env.TELEGRAM_CHAT_ID;
-        
-        if (process.env.TELEGRAM_BOT_TOKEN) {
-            this.telegramBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {polling: false});
-        }
-
         // Email Configuration (Gmail SMTP)
         this.emailTransporter = nodemailer.createTransport({
             service: 'gmail',
@@ -20,24 +11,11 @@ class NotificationService {
                 pass: process.env.EMAIL_APP_PASSWORD // Gmail App Password
             }
         });
+        
+        console.log('📧 Email-only notification service initialized');
     }
 
-    // Send Telegram Notification
-    async sendTelegramMessage(message) {
-        if (!this.telegramBot || !this.telegramChatId) {
-            console.log('❌ Telegram not configured');
-            return false;
-        }
-
-        try {
-            await this.telegramBot.sendMessage(this.telegramChatId, message);
-            console.log('✅ Telegram message sent successfully');
-            return true;
-        } catch (error) {
-            console.error('❌ Telegram error:', error.message);
-            return false;
-        }
-    }
+    // Email-only notification system (Telegram removed)
 
     // Send Email Notification
     async sendEmailNotification(subject, message, toEmail) {
@@ -78,36 +56,59 @@ class NotificationService {
         }
     }
 
-    // Send Both Notifications
+    // Send Email Notifications (Simplified)
+    async sendUserNotification(title, message, userEmail = null, userPhone = null, notificationType = 'email') {
+        console.log(`📧 Sending email notification to: ${userEmail || 'default recipient'}`);
+        
+        const targetEmail = userEmail || process.env.DEFAULT_EMAIL_RECIPIENT;
+        
+        // Send email notification
+        try {
+            const emailSuccess = await this.sendEmailNotification(title, message, targetEmail);
+            console.log(`📊 Result: Email to ${targetEmail}: ${emailSuccess ? '✅' : '❌'}`);
+            
+            return {
+                email: emailSuccess,
+                success: emailSuccess
+            };
+        } catch (error) {
+            console.error('❌ Email notification failed:', error.message);
+            return {
+                email: false,
+                success: false
+            };
+        }
+    }
+    
+    // Send Email Notification (Legacy - for testing)
     async sendNotification(title, message, emailRecipient = null) {
-        console.log(`📢 Sending notification: ${title}`);
+        console.log(`📧 Sending email notification: ${title}`);
         
-        const telegramMessage = `🔥 *${title}*\n\n${message}`;
-        
-        const results = await Promise.allSettled([
-            this.sendTelegramMessage(telegramMessage),
-            this.sendEmailNotification(title, message, emailRecipient)
-        ]);
-
-        const telegramSuccess = results[0].status === 'fulfilled' && results[0].value;
-        const emailSuccess = results[1].status === 'fulfilled' && results[1].value;
-
-        console.log(`📊 Results: Telegram: ${telegramSuccess ? '✅' : '❌'} | Email: ${emailSuccess ? '✅' : '❌'}`);
-        
-        return {
-            telegram: telegramSuccess,
-            email: emailSuccess,
-            success: telegramSuccess || emailSuccess
-        };
+        try {
+            const emailSuccess = await this.sendEmailNotification(title, message, emailRecipient);
+            
+            console.log(`📊 Result: Email: ${emailSuccess ? '✅' : '❌'}`);
+            
+            return {
+                email: emailSuccess,
+                success: emailSuccess
+            };
+        } catch (error) {
+            console.error('❌ Email notification error:', error.message);
+            return {
+                email: false,
+                success: false
+            };
+        }
     }
 
-    // Test Notifications
+    // Test Email Notifications
     async testNotifications() {
-        console.log('🧪 Testing notification system...\n');
+        console.log('🧪 Testing email notification system...\n');
         
-        const testMessage = `This is a test notification from DealDrip!\n\nTimestamp: ${new Date().toLocaleString()}`;
+        const testMessage = `This is a test email notification from DealDrip!\n\nTimestamp: ${new Date().toLocaleString()}`;
         
-        return await this.sendNotification('Test Notification', testMessage);
+        return await this.sendNotification('Test Email Notification', testMessage);
     }
 }
 
@@ -115,13 +116,14 @@ class NotificationService {
 async function main() {
     const notifier = new NotificationService();
     
-    // Test the notification system
+    // Test the email notification system
     await notifier.testNotifications();
     
-    // Example deal notification
+    // Example deal notification (email-only)
     // await notifier.sendNotification(
     //     'New Deal Alert!',
-    //     'MacBook Pro 16" - 50% OFF\nOriginal Price: $2,499\nSale Price: $1,249\nSavings: $1,250\n\nLink: https://example.com/deal'
+    //     'MacBook Pro 16" - 50% OFF\nOriginal Price: $2,499\nSale Price: $1,249\nSavings: $1,250\n\nLink: https://example.com/deal',
+    //     'user@example.com'
     // );
 }
 

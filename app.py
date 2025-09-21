@@ -1142,44 +1142,62 @@ class EmailNotifier:
 import subprocess
 
 class NotificationManager:
-    """Production-ready notification manager with Telegram and Email"""
+    """Production-ready email notification manager"""
     
     def __init__(self, email_notifier):
         self.email_notifier = email_notifier
-        logger.info("🚀 Telegram+Email notification system initialized")
+        logger.info("📧 Email notification system initialized")
     
     def send_notification(self, notification_type, user_email, user_phone, product_url, current_price, target_price):
-        """Send notification via Telegram + Email system"""
+        """Send email notification to user"""
         success = False
         
-        # Always use our Telegram+Email system regardless of notification_type
-        # This provides the best user experience with instant Telegram + Email
-        success = self._send_telegram_email_notification(product_url, current_price, target_price, user_email)
+        # Use email notification system
+        success = self._send_email_notification(product_url, current_price, target_price, user_email, user_phone, notification_type)
         
         if success:
-            contact = user_email or user_phone or 'user'
-            logger.info(f"✅ Telegram+Email notification sent successfully to {contact}")
+            contact = user_email or 'user'
+            logger.info(f"✅ Email notification sent successfully to {contact}")
         else:
-            logger.error(f"❌ Telegram+Email notification failed")
+            logger.error(f"❌ Email notification failed")
         
         return success
     
-    def _send_telegram_email_notification(self, product_url, current_price, target_price, user_email=None):
-        """Send notification via JavaScript system with Python email fallback"""
+    def _send_email_notification(self, product_url, current_price, target_price, user_email=None, user_phone=None, notification_type='email'):
+        """Send email notification via Node.js system with Python email fallback"""
         try:
             savings = target_price - current_price
             title = f"🎉 Deal Alert - ₹{current_price:.2f}"
             message = f"Price Alert! Your target has been reached!\n\n💰 Current Price: ₹{current_price:.2f}\n🎯 Target Price: ₹{target_price:.2f}\n💸 You Save: ₹{savings:.2f}\n\n🔗 Product: {product_url}\n\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n- DealDrip Bot"
             
-            # Try Node.js notification system first
+            # Try Node.js email system first with user details
             try:
-                result = subprocess.run([
+                # Build command with user-specific parameters
+                cmd = [
                     'node', 'send_notification.js', 
                     title, message, product_url
-                ], capture_output=True, text=True, timeout=15, encoding='utf-8', errors='ignore')
+                ]
+                
+                # Add user email if provided
+                if user_email:
+                    cmd.append(user_email)
+                else:
+                    cmd.append('null')  # Placeholder
+                
+                # Add user phone if provided
+                if user_phone:
+                    cmd.append(user_phone)
+                else:
+                    cmd.append('null')  # Placeholder
+                    
+                # Add notification type
+                cmd.append(notification_type)
+                
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=15, encoding='utf-8', errors='ignore')
                 
                 if result.stdout and 'NOTIFICATION_SUCCESS' in result.stdout:
-                    logger.info("✅ Node.js Telegram+Email notification sent successfully!")
+                    logger.info("✅ Node.js email notification sent successfully!")
                     return True
                 else:
                     logger.warning(f"⚠️ Node.js notification failed: {result.stdout if result.stdout else 'No output'}")
@@ -1209,12 +1227,12 @@ class NotificationManager:
             return False
     
     def health_check(self):
-        """Simple health check for Telegram+Email system"""
+        """Simple health check for email system"""
         return {
             "overall_healthy": True,
             "providers": {
-                "telegram": {"status": "available", "type": "telegram"},
-                "email": {"status": "available", "type": "email"}
+                "email": {"status": "available", "type": "email"},
+                "nodejs_email": {"status": "available", "type": "nodejs_fallback"}
             }
         }
 
@@ -1334,43 +1352,22 @@ def track_product():
                 'message': 'Target price must be greater than 0'
             }), 400
         
-        # Validate notification method
-        if notification_type == 'email':
-            if not user_email:
-                return jsonify({
-                    'success': False,
-                    'message': 'Email address is required for email notifications'
-                }), 400
-            
-            email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-            if not re.match(email_pattern, user_email):
-                return jsonify({
-                    'success': False,
-                    'message': 'Please enter a valid email address'
-                }), 400
+        # Validate email (always required)
+        if not user_email:
+            return jsonify({
+                'success': False,
+                'message': 'Email address is required'
+            }), 400
         
-        elif notification_type == 'whatsapp':
-            if not user_phone:
-                return jsonify({
-                    'success': False,
-                    'message': 'Phone number is required for WhatsApp notifications'
-                }), 400
+        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        if not re.match(email_pattern, user_email):
+            return jsonify({
+                'success': False,
+                'message': 'Please enter a valid email address'
+            }), 400
             
-            # Basic phone validation
-            phone_pattern = r'^[+]?[0-9]{10,15}$'
-            clean_phone = re.sub(r'[^0-9+]', '', user_phone)
-            if not re.match(phone_pattern, clean_phone):
-                return jsonify({
-                    'success': False,
-                    'message': 'Please enter a valid phone number (10-15 digits)'
-                }), 400
-        
-        elif notification_type == 'both':
-            if not user_email and not user_phone:
-                return jsonify({
-                    'success': False,
-                    'message': 'Either email or phone number is required'
-                }), 400
+        # Force notification type to email
+        notification_type = 'email'
         
         # Add to database
         logger.info(f"Attempting to add alert: URL={product_url[:50]}..., Price=${target_price}, Email={user_email}, Phone={user_phone}, Type={notification_type}")
