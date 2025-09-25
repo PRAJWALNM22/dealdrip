@@ -94,15 +94,7 @@ Want to help make Dealdrip better?
 3. Make your changes
 4. Submit a pull request
 
-## 📝 License
 
-MIT License - feel free to use this for your own projects!
-
-## 🐛 Issues?
-
-Found a bug? Have a suggestion? 
-
-[Create an issue](https://github.com/yourusername/dealdrip/issues) and we'll help you out!
 
 ---
 
